@@ -33,6 +33,11 @@ class Consumer extends BaseConsumer
     protected $gracefulMaxExecutionTimeoutExitCode = 0;
 
     /**
+     * @var int
+     */
+    protected $timeoutWait = 3;
+
+    /**
      * Set the memory limit
      *
      * @param int $memoryLimit
@@ -67,6 +72,7 @@ class Consumer extends BaseConsumer
 
         $this->setupConsumer();
 
+        $lastActivity = time();
         while (count($this->getChannel()->callbacks)) {
             $this->dispatchEvent(OnConsumeEvent::NAME, new OnConsumeEvent($this));
             $this->maybeStopConsumer();
@@ -86,19 +92,26 @@ class Consumer extends BaseConsumer
             if (!$this->forceStop) {
                 try {
                     $this->getChannel()->wait(null, false, $waitTimeout['seconds']);
+                    $lastActivity = time();
                 } catch (AMQPTimeoutException $e) {
-                    if (self::TIMEOUT_TYPE_GRACEFUL_MAX_EXECUTION === $waitTimeout['timeoutType']) {
+                    $now = new \DateTime();
+
+                    if (self::TIMEOUT_TYPE_GRACEFUL_MAX_EXECUTION === $waitTimeout['timeoutType']
+                        && $this->gracefulMaxExecutionDateTime <= $now
+                    ) {
                         return $this->gracefulMaxExecutionTimeoutExitCode;
-                    }
+                    } elseif (self::TIMEOUT_TYPE_IDLE === $waitTimeout['timeoutType']
+                        && $lastActivity + $this->getIdleTimeout() <= $now->getTimestamp()
+                    ) {
+                        $idleEvent = new OnIdleEvent($this);
+                        $this->dispatchEvent(OnIdleEvent::NAME, $idleEvent);
 
-                    $idleEvent = new OnIdleEvent($this);
-                    $this->dispatchEvent(OnIdleEvent::NAME, $idleEvent);
-
-                    if ($idleEvent->isForceStop()) {
-                        if (null !== $this->getIdleTimeoutExitCode()) {
-                            return $this->getIdleTimeoutExitCode();
-                        } else {
-                            throw $e;
+                        if ($idleEvent->isForceStop()) {
+                            if (null !== $this->getIdleTimeoutExitCode()) {
+                                return $this->getIdleTimeoutExitCode();
+                            } else {
+                                throw $e;
+                            }
                         }
                     }
                 }
@@ -115,7 +128,7 @@ class Consumer extends BaseConsumer
     {
         $this->getChannel()->queue_purge($this->queueOptions['name'], true);
     }
-    
+
     /**
      * Delete the queue
      */
@@ -240,6 +253,14 @@ class Consumer extends BaseConsumer
     }
 
     /**
+     * @param int $timeoutWait
+     */
+    public function setTimeoutWait($timeoutWait)
+    {
+        $this->timeoutWait = $timeoutWait;
+    }
+
+    /**
      * @return \DateTime|null
      */
     public function getGracefulMaxExecutionDateTime()
@@ -253,6 +274,14 @@ class Consumer extends BaseConsumer
     public function getGracefulMaxExecutionTimeoutExitCode()
     {
         return $this->gracefulMaxExecutionTimeoutExitCode;
+    }
+
+    /**
+     * @return int
+     */
+    public function getTimeoutWait()
+    {
+        return $this->timeoutWait;
     }
 
     /**
@@ -285,21 +314,24 @@ class Consumer extends BaseConsumer
                 $this->getIdleTimeout()
                 && $this->getIdleTimeout() < $allowedExecutionSeconds
             ) {
-                return array(
+                $waitTimeout = array(
                     'timeoutType' => self::TIMEOUT_TYPE_IDLE,
                     'seconds' => $this->getIdleTimeout(),
                 );
+            } else {
+                $waitTimeout = array(
+                    'timeoutType' => self::TIMEOUT_TYPE_GRACEFUL_MAX_EXECUTION,
+                    'seconds' => $allowedExecutionSeconds,
+                );
             }
-
-            return array(
-                'timeoutType' => self::TIMEOUT_TYPE_GRACEFUL_MAX_EXECUTION,
-                'seconds' => $allowedExecutionSeconds,
+        } else {
+            $waitTimeout = array(
+                'timeoutType' => self::TIMEOUT_TYPE_IDLE,
+                'seconds' => $this->getIdleTimeout(),
             );
         }
 
-        return array(
-            'timeoutType' => self::TIMEOUT_TYPE_IDLE,
-            'seconds' => $this->getIdleTimeout(),
-        );
+        $waitTimeout['seconds'] = min($waitTimeout['seconds'], $this->getTimeoutWait());
+        return $waitTimeout;
     }
 }
