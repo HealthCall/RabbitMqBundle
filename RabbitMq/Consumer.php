@@ -33,9 +33,14 @@ class Consumer extends BaseConsumer
     protected $gracefulMaxExecutionTimeoutExitCode = 0;
 
     /**
-     * @var int
+     * @var int|null
      */
-    protected $timeoutWait = 3;
+    protected $timeoutWait;
+
+    /**
+     * @var \DateTime|null
+     */
+    protected $lastActivityDateTime;
 
     /**
      * Set the memory limit
@@ -72,7 +77,7 @@ class Consumer extends BaseConsumer
 
         $this->setupConsumer();
 
-        $lastActivity = time();
+        $this->setLastActivityDateTime(new \DateTime());
         while (count($this->getChannel()->callbacks)) {
             $this->dispatchEvent(OnConsumeEvent::NAME, new OnConsumeEvent($this));
             $this->maybeStopConsumer();
@@ -92,16 +97,16 @@ class Consumer extends BaseConsumer
             if (!$this->forceStop) {
                 try {
                     $this->getChannel()->wait(null, false, $waitTimeout['seconds']);
-                    $lastActivity = time();
+                    $this->setLastActivityDateTime(new \DateTime());
                 } catch (AMQPTimeoutException $e) {
-                    $now = new \DateTime();
+                    $now = time();
 
                     if (self::TIMEOUT_TYPE_GRACEFUL_MAX_EXECUTION === $waitTimeout['timeoutType']
-                        && $this->gracefulMaxExecutionDateTime <= $now
+                        && $this->gracefulMaxExecutionDateTime <= new \DateTime("@$now")
                     ) {
                         return $this->gracefulMaxExecutionTimeoutExitCode;
                     } elseif (self::TIMEOUT_TYPE_IDLE === $waitTimeout['timeoutType']
-                        && $lastActivity + $this->getIdleTimeout() <= $now->getTimestamp()
+                        && $this->getLastActivityDateTime()->getTimestamp() + $this->getIdleTimeout() <= $now
                     ) {
                         $idleEvent = new OnIdleEvent($this);
                         $this->dispatchEvent(OnIdleEvent::NAME, $idleEvent);
@@ -331,7 +336,25 @@ class Consumer extends BaseConsumer
             );
         }
 
-        $waitTimeout['seconds'] = min($waitTimeout['seconds'], $this->getTimeoutWait());
+        if ($this->getTimeoutWait()) {
+            $waitTimeout['seconds'] = min($waitTimeout['seconds'], $this->getTimeoutWait());
+        }
         return $waitTimeout;
+    }
+
+    /**
+     * @param \DateTime $dateTime
+     */
+    public function setLastActivityDateTime(\DateTime $dateTime)
+    {
+        $this->lastActivityDateTime = $dateTime;
+    }
+
+    /**
+     * @return \DateTime|null
+     */
+    protected function getLastActivityDateTime()
+    {
+        return $this->lastActivityDateTime;
     }
 }
