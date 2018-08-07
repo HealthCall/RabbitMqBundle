@@ -202,13 +202,18 @@ class ConsumerTest extends TestCase
         // disable autosetup fabric so we do not mock more objects
         $consumer->disableAutoSetupFabric();
         $consumer->setChannel($amqpChannel);
+        $consumer->setIdleTimeout(60);
         $consumer->setIdleTimeoutExitCode(2);
         $amqpChannel->callbacks = array('idle_timeout_exit_code');
 
         $amqpChannel->expects($this->exactly(1))
             ->method('wait')
             ->with(null, false, $consumer->getIdleTimeout())
-            ->willThrowException(new AMQPTimeoutException());
+            ->willReturnCallback(function ($allowedMethods, $nonBlocking, $waitTimeout) use ($consumer) {
+                // simulate time passing by moving the last activity date time
+                $consumer->setLastActivityDateTime(new \DateTime("-$waitTimeout seconds"));
+                throw new AMQPTimeoutException();
+            });
 
         $this->assertTrue(2 == $consumer->consume(1));
     }
